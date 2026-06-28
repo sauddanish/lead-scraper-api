@@ -195,3 +195,12 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Lead Scraper API running on port ${PORT}`);
 });
+app.post("/scrape", async (req, res) => {
+    const { url } = req.body;
+
+    res.json({
+        success: true,
+        message: "Scrape route working",
+        url
+    });
+});
