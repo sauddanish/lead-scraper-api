@@ -56,7 +56,7 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
   const phonesSet = new Set();
   const businessLinksSet = new Set();
 
-  // 🌟 FIXED PERMANENTLY: Loaded your premium authenticated Webshare proxy pool strings
+  // Premium authenticated Webshare proxy pool strings
   const proxyConfiguration = new ProxyConfiguration({
     proxyUrls: [
       "http://amrztcmk:o4zemvlhwcgy@31.59.20.176:6754",
@@ -80,6 +80,12 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
     navigationTimeoutSecs: 60000,
     proxyConfiguration, 
 
+    // 🌟 CHANGE 1: Enable isolated cookie and session pool managers
+    useSessionPool: true,
+    sessionPoolOptions: {
+      maxPoolSize: 20,
+    },
+
     launchContext: {
       launcher: chromium,
       launchOptions: {
@@ -94,33 +100,48 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
       },
     },
 
+    // 🌟 CHANGE 2: Introduce randomized human delays before moving context tabs
     preNavigationHooks: [
       async ({ page }) => {
+        const preWait = Math.floor(Math.random() * 3000) + 2000;
+        console.log(`🕒 Simulating human thinking path: Waiting ${preWait}ms...`);
+        await page.waitForTimeout(preWait);
+
         await page.context().setExtraHTTPHeaders({
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+          "Accept-Language": "en-US,en;q=0.9"
         });
       },
     ],
 
-    async requestHandler({ request, page }) {
+    // 🌟 CHANGE 3: Expose the session context parameter here to cycle bad IPs
+    async requestHandler({ request, page, session }) {
       const currentUrl = request.url;
       if (visited.has(currentUrl)) return;
       visited.add(currentUrl);
 
       console.log(`🔎 Navigating browser to: ${currentUrl}`);
 
-      // Navigate to target path location first
-      await page.goto(currentUrl, {
+      // Open target URL
+      const response = await page.goto(currentUrl, {
         waitUntil: "domcontentloaded",
         timeout: 60000,
       }).catch(() => null);
 
-      // Random human pacing break
+      // Random human post-load pacing break
       await page.waitForTimeout(Math.floor(Math.random() * 2000) + 1500);
 
-      // Verify active URL state against security checkpoints
-      if (page.url().includes("sorry/index") || (await page.$('iframe[src*="recaptcha"]'))) {
-        console.error("⚠️ Caught by Google Bot Detection Shield on: " + currentUrl);
+      // 🌟 CHANGE 4: Detect explicit 429 errors or security pages and rotate proxy
+      if (response && (response.status() === 429 || page.url().includes("sorry/index"))) {
+        console.error(`⚠️ Proxy IP flagged with a 429 rate-limit by Google. Discarding session proxy...`);
+        if (session) session.retire(); 
+        throw new Error("Rate limit block hit. Retrying request with a fresh proxy instance.");
+      }
+
+      // Fallback check against open elements
+      if (await page.$('iframe[src*="recaptcha"]')) {
+        console.error("⚠️ Caught by Google Recaptcha Shield on: " + currentUrl);
+        if (session) session.retire();
         return;
       }
 
