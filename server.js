@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import axios from "axios";
 import { PlaywrightCrawler, ProxyConfiguration } from "crawlee";
 import { chromium } from "playwright-extra";
 import stealthPlugin from "puppeteer-extra-plugin-stealth";
@@ -30,7 +31,6 @@ function isValidBusinessLink(url) {
   return !blocked.some((d) => url.includes(d));
 }
 
-// 🌟 FIXED: Removed the floating out-of-scope return statement
 function extractBusinessLinks(html) {
   const links = [...html.matchAll(/https?:\/\/[^\s"'<>]+/g)].map((m) => m[0]);
   return links.filter((link) => {
@@ -58,19 +58,10 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
   const phonesSet = new Set();
   const businessLinksSet = new Set();
 
-  // Premium authenticated Webshare proxy pool strings
+  // Route your underlying deep crawl tasks safely via your local Tor service
   const proxyConfiguration = new ProxyConfiguration({
     proxyUrls: [
-      "http://amrztcmk:o4zemvlhwcgy@31.59.20.176:6754",
-      "http://amrztcmk:o4zemvlhwcgy@31.56.127.193:7684",
-      "http://amrztcmk:o4zemvlhwcgy@45.38.107.97:6014",
-      "http://amrztcmk:o4zemvlhwcgy@38.154.203.95:5863",
-      "http://amrztcmk:o4zemvlhwcgy@198.105.121.200:6462",
-      "http://amrztcmk:o4zemvlhwcgy@64.137.96.74:6641",
-      "http://amrztcmk:o4zemvlhwcgy@198.23.243.226:6361",
-      "http://amrztcmk:o4zemvlhwcgy@38.154.185.97:6370",
-      "http://amrztcmk:o4zemvlhwcgy@142.111.67.146:5611",
-      "http://amrztcmk:o4zemvlhwcgy@191.96.254.138:6185"
+      "socks5://172.17.0.1:9050"
     ],
   });
 
@@ -119,7 +110,7 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
       if (visited.has(currentUrl)) return;
       visited.add(currentUrl);
 
-      console.log(`🔎 Navigating browser to: ${currentUrl}`);
+      console.log(`🔎 Navigating browser to corporate target site: ${currentUrl}`);
 
       const response = await page.goto(currentUrl, {
         waitUntil: "domcontentloaded",
@@ -128,68 +119,11 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
 
       await page.waitForTimeout(Math.floor(Math.random() * 2000) + 1500);
 
-      if (response && (response.status() === 429 || page.url().includes("sorry/index"))) {
-        console.error(`⚠️ Proxy IP flagged with a 429 rate-limit by Google. Discarding session proxy...`);
+      // Handle accidental proxy disconnect breaks smoothly 
+      if (response && response.status() === 429) {
+        console.error(`⚠️ Target business server threw a 429. Rotating proxy node context...`);
         if (session) session.retire(); 
-        throw new Error("Rate limit block hit. Retrying request with a fresh proxy instance.");
-      }
-
-      if (await page.$('iframe[src*="recaptcha"]')) {
-        console.error("⚠️ Caught by Google Recaptcha Shield on: " + currentUrl);
-        if (session) session.retire();
-        return;
-      }
-
-      // ✅ ROUTE A: Target Google Search page scraping using exact multi-layered DOM nodes
-      if (currentUrl.includes("google.com/search")) {
-        console.log("Analyzing Google search results layout...");
-        
-        await page.waitForSelector("#search", { timeout: 8000 }).catch(() => null);
-        
-        const discoveredLinks = await page.$$eval("#search a[href]", (elements) => {
-          return elements
-            .map((el) => el.href)
-            .filter((href) => {
-              if (!href) return false;
-              const blocked = [
-                "google.com", "facebook.com", "linkedin.com", "instagram.com",
-                "twitter.com", "x.com", "youtube.com", "maps.google", "support.google",
-                "accounts.google", "search?"
-              ];
-              return !blocked.some((d) => href.includes(d));
-            });
-        }).catch(() => []);
-
-        let finalLinks = [...new Set(discoveredLinks)];
-
-        if (finalLinks.length === 0) {
-          console.log("⚠️ DOM targeting returned 0, executing fallback raw text matching block...");
-          const htmlContent = await page.content().catch(() => "");
-          finalLinks = extractBusinessLinks(htmlContent);
-        }
-
-        console.log(`✅ Successfully extracted ${finalLinks.length} target business domains from Google Search results!`);
-
-        if (finalLinks.length === 0) {
-          console.error("❌ Critical: No business domains could be extracted from this proxy session view.");
-          return;
-        }
-
-        const targetRequests = [];
-        for (const link of finalLinks.slice(0, 5)) {
-          const cleanLink = link.split("#")[0];
-          if (!visited.has(cleanLink) && !queued.has(cleanLink)) {
-            queued.add(cleanLink);
-            businessLinksSet.add(cleanLink);
-            targetRequests.push({ url: cleanLink });
-          }
-        }
-
-        if (targetRequests.length > 0) {
-          console.log(`Adding ${targetRequests.length} business websites to deep crawler queue...`);
-          await crawler.addRequests(targetRequests);
-        }
-        return; 
+        throw new Error("Temporary block. Retrying request path with a clean Tor node proxy.");
       }
 
       // -------------------- ROUTE B: Target Corporate Site Lead Extraction --------------------
@@ -232,7 +166,7 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
   await crawler.run();
 
   return {
-    scrapedDomain: startUrl.includes("google.com") ? "https://www.google.com" : new URL(startUrl).origin,
+    scrapedDomain: new URL(startUrl).origin,
     totalPagesScraped: pages.length,
     emails: [...emailsSet],
     phones: [...phonesSet],
@@ -246,13 +180,48 @@ app.post("/scrape", async (req, res) => {
   try {
     const { url, query, country, city, industry, jobTitle, maxPages } = req.body;
 
-    let targetUrl = url;
-    if (!targetUrl) {
-      targetUrl = buildTargetUrl({ query, country, city, industry, jobTitle });
+    // 🌟 UNBLOCKABLE LIVE SERP API LAYER
+    const VALUESERP_API_KEY = "EEFC9658959749AB9E62FBA99BE06504";
+    
+    // Construct search term string matching original target filters
+    const searchParts = [query, industry, jobTitle, city, country].filter(Boolean).join(" ");
+    console.log(`📡 Fetching clean, unblocked Google SERP data via ValueSerp API for: "${searchParts}"`);
+
+    // Fetch organic targets directly from ValueSerp parse nodes
+    const serpResponse = await axios.get("https://api.valueserp.com/search", {
+      params: {
+        api_key: VALUESERP_API_KEY,
+        q: searchParts,
+        num: 10,
+        location: city && country ? `${city},${country}` : undefined
+      }
+    });
+
+    // Strip business link structures away from response tree objects
+    const organicResults = serpResponse.data.organic_results || [];
+    const initialBusinessLinks = organicResults
+      .map(item => item.link)
+      .filter(link => link && isValidBusinessLink(link));
+
+    console.log(`✅ ValueSerp extraction engine returned ${initialBusinessLinks.length} target corporate domains!`);
+
+    if (initialBusinessLinks.length === 0) {
+      return res.json({
+        success: true,
+        message: "No business links found for these parameters.",
+        meta: { emailsFound: 0, phonesFound: 0, businessLinksFound: 0, pagesScraped: 0 },
+        data: { totalPagesScraped: 0, emails: [], phones: [], businessLinks: [], pages: [] }
+      });
     }
 
-    console.log(`🚀 Triggering scraper engine sequence for target: ${targetUrl}`);
-    const result = await scrapeLeadWebsite(targetUrl, maxPages || 3);
+    // Target the first discovered corporate site link to launch the contact crawler loop
+    const targetStartUrl = initialBusinessLinks[0];
+    console.log(`🚀 Launching internal Crawlee engine to deeply map target corporate site: ${targetStartUrl}`);
+
+    const result = await scrapeLeadWebsite(targetStartUrl, maxPages || 3);
+
+    // Merge all other discovered organic search targets back into the output dataset array
+    result.businessLinks = [...new Set([...result.businessLinks, ...initialBusinessLinks])];
 
     res.json({
       success: true,
@@ -265,7 +234,9 @@ app.post("/scrape", async (req, res) => {
       },
       data: result,
     });
+
   } catch (error) {
+    console.error("❌ Scraper engine operation routine broke:", error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
