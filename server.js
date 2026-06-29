@@ -7,6 +7,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
+// -------------------- URL NORMALIZER --------------------
 function normalizeUrl(input) {
   if (!input) throw new Error("URL is required");
 
@@ -19,6 +20,7 @@ function normalizeUrl(input) {
   return new URL(url).toString();
 }
 
+// -------------------- EXTRACTORS --------------------
 function extractEmails(text) {
   return [
     ...new Set(
@@ -29,9 +31,7 @@ function extractEmails(text) {
 
 function extractPhones(text) {
   return [
-    ...new Set(
-      text.match(/(\+?\d[\d\s().-]{7,}\d)/g) || []
-    ),
+    ...new Set(text.match(/(\+?\d[\d\s().-]{7,}\d)/g) || []),
   ];
 }
 
@@ -55,21 +55,23 @@ function extractSocialLinks(links) {
     linkedin: uniqueLinks.filter((l) => l.includes("linkedin.com")),
     facebook: uniqueLinks.filter((l) => l.includes("facebook.com")),
     instagram: uniqueLinks.filter((l) => l.includes("instagram.com")),
-    twitter: uniqueLinks.filter((l) => l.includes("twitter.com") || l.includes("x.com")),
+    twitter: uniqueLinks.filter(
+      (l) => l.includes("twitter.com") || l.includes("x.com")
+    ),
   };
 }
 
+// -------------------- MAIN SCRAPER --------------------
 async function scrapeLeadWebsite(startUrl, maxPages = 5) {
   const url = normalizeUrl(startUrl);
   const origin = new URL(url).origin;
 
-  const safeMaxPages = Math.min(Number(maxPages) || 5, 10);
+  const safeMaxPages = Math.min(Number(maxPages) || 5, 8);
 
   const visitedUrls = new Set();
   const queuedUrls = new Set();
 
   const pages = [];
-
   const allEmails = new Set();
   const allPhones = new Set();
   const allSocialLinks = [];
@@ -77,55 +79,61 @@ async function scrapeLeadWebsite(startUrl, maxPages = 5) {
   const crawler = new PlaywrightCrawler({
     maxRequestsPerCrawl: safeMaxPages,
 
-    // IMPORTANT: keep this low on VPS to avoid Playwright crash
+    // 🔥 CRITICAL VPS STABILITY FIX
     minConcurrency: 1,
     maxConcurrency: 1,
 
-    requestHandlerTimeoutSecs: 90,
-    navigationTimeoutSecs: 60,
+    requestHandlerTimeoutSecs: 120,
+    navigationTimeoutSecs: 60000,
 
     launchContext: {
       launchOptions: {
         headless: true,
+
+        // 🔥 VPS SAFE CHROMIUM FLAGS (IMPORTANT FIX)
         args: [
           "--no-sandbox",
           "--disable-setuid-sandbox",
           "--disable-dev-shm-usage",
+          "--single-process",
+          "--no-zygote",
           "--disable-gpu",
-          "--disable-software-rasterizer",
           "--disable-extensions",
           "--disable-background-networking",
-          "--disable-default-apps",
           "--disable-sync",
-          "--metrics-recording-only",
           "--mute-audio",
-          "--no-first-run",
-          "--no-zygote"
         ],
       },
     },
 
     async requestHandler({ request, page }) {
       const currentUrl = request.url;
+
+      if (visitedUrls.has(currentUrl)) return;
       visitedUrls.add(currentUrl);
 
-      await page.goto(currentUrl, {
-        waitUntil: "domcontentloaded",
-        timeout: 60000,
-      }).catch(() => null);
+      await page
+        .goto(currentUrl, {
+          waitUntil: "domcontentloaded",
+          timeout: 60000,
+        })
+        .catch(() => null);
 
       const title = await page.title().catch(() => "");
-      const bodyText = await page.locator("body").innerText().catch(() => "");
+      const bodyText = await page
+        .locator("body")
+        .innerText()
+        .catch(() => "");
       const html = await page.content().catch(() => "");
 
       const pageEmails = extractEmails(bodyText + " " + html);
       const pagePhones = extractPhones(bodyText);
 
-      pageEmails.forEach((email) => allEmails.add(email));
-      pagePhones.forEach((phone) => allPhones.add(phone));
+      pageEmails.forEach((e) => allEmails.add(e));
+      pagePhones.forEach((p) => allPhones.add(p));
 
-      const links = await page.$$eval("a[href]", (elements) =>
-        elements.map((a) => a.href)
+      const links = await page.$$eval("a[href]", (els) =>
+        els.map((a) => a.href)
       ).catch(() => []);
 
       allSocialLinks.push(...links);
@@ -137,6 +145,7 @@ async function scrapeLeadWebsite(startUrl, maxPages = 5) {
         phones: pagePhones,
       });
 
+      // ---------------- SAFE LINK DISCOVERY ----------------
       const newRequests = [];
 
       for (const link of links) {
@@ -157,14 +166,14 @@ async function scrapeLeadWebsite(startUrl, maxPages = 5) {
       }
 
       if (newRequests.length > 0) {
-        await crawler.addRequests(newRequests.slice(0, 5));
+        await crawler.addRequests(newRequests.slice(0, 3));
       }
     },
 
     failedRequestHandler({ request, error }) {
       pages.push({
         url: request.url,
-        error: error?.message || "Failed to scrape this page",
+        error: error?.message || "Scrape failed",
       });
     },
   });
@@ -182,6 +191,7 @@ async function scrapeLeadWebsite(startUrl, maxPages = 5) {
   };
 }
 
+// -------------------- ROUTES --------------------
 app.get("/", (req, res) => {
   res.json({
     success: true,
@@ -200,6 +210,13 @@ app.post("/scrape", async (req, res) => {
   try {
     const { url, maxPages } = req.body;
 
+    if (!url) {
+      return res.status(400).json({
+        success: false,
+        error: "URL is required",
+      });
+    }
+
     const result = await scrapeLeadWebsite(url, maxPages || 5);
 
     res.json({
@@ -214,8 +231,9 @@ app.post("/scrape", async (req, res) => {
   }
 });
 
+// -------------------- START SERVER --------------------
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Lead Scraper API running on port ${PORT}`);
+  console.log(`🚀 Lead Scraper API running on port ${PORT}`);
 });
