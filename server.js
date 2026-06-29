@@ -49,11 +49,13 @@ function isPriorityPage(url) {
 }
 
 function extractSocialLinks(links) {
+  const uniqueLinks = [...new Set(links)];
+
   return {
-    linkedin: links.filter((l) => l.includes("linkedin.com")),
-    facebook: links.filter((l) => l.includes("facebook.com")),
-    instagram: links.filter((l) => l.includes("instagram.com")),
-    twitter: links.filter((l) => l.includes("twitter.com") || l.includes("x.com")),
+    linkedin: uniqueLinks.filter((l) => l.includes("linkedin.com")),
+    facebook: uniqueLinks.filter((l) => l.includes("facebook.com")),
+    instagram: uniqueLinks.filter((l) => l.includes("instagram.com")),
+    twitter: uniqueLinks.filter((l) => l.includes("twitter.com") || l.includes("x.com")),
   };
 }
 
@@ -61,7 +63,11 @@ async function scrapeLeadWebsite(startUrl, maxPages = 5) {
   const url = normalizeUrl(startUrl);
   const origin = new URL(url).origin;
 
+  const safeMaxPages = Math.min(Number(maxPages) || 5, 10);
+
   const visitedUrls = new Set();
+  const queuedUrls = new Set();
+
   const pages = [];
 
   const allEmails = new Set();
@@ -69,10 +75,14 @@ async function scrapeLeadWebsite(startUrl, maxPages = 5) {
   const allSocialLinks = [];
 
   const crawler = new PlaywrightCrawler({
-    maxRequestsPerCrawl: maxPages,
-    maxConcurrency: 2,
-    requestHandlerTimeoutSecs: 60,
-    navigationTimeoutSecs: 45,
+    maxRequestsPerCrawl: safeMaxPages,
+
+    // IMPORTANT: keep this low on VPS to avoid Playwright crash
+    minConcurrency: 1,
+    maxConcurrency: 1,
+
+    requestHandlerTimeoutSecs: 90,
+    navigationTimeoutSecs: 60,
 
     launchContext: {
       launchOptions: {
@@ -80,7 +90,17 @@ async function scrapeLeadWebsite(startUrl, maxPages = 5) {
         args: [
           "--no-sandbox",
           "--disable-setuid-sandbox",
-          "--disable-dev-shm-usage"
+          "--disable-dev-shm-usage",
+          "--disable-gpu",
+          "--disable-software-rasterizer",
+          "--disable-extensions",
+          "--disable-background-networking",
+          "--disable-default-apps",
+          "--disable-sync",
+          "--metrics-recording-only",
+          "--mute-audio",
+          "--no-first-run",
+          "--no-zygote"
         ],
       },
     },
@@ -89,7 +109,10 @@ async function scrapeLeadWebsite(startUrl, maxPages = 5) {
       const currentUrl = request.url;
       visitedUrls.add(currentUrl);
 
-      await page.waitForLoadState("domcontentloaded");
+      await page.goto(currentUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: 60000,
+      }).catch(() => null);
 
       const title = await page.title().catch(() => "");
       const bodyText = await page.locator("body").innerText().catch(() => "");
@@ -124,23 +147,24 @@ async function scrapeLeadWebsite(startUrl, maxPages = 5) {
           if (
             parsed.origin === origin &&
             !visitedUrls.has(cleanLink) &&
+            !queuedUrls.has(cleanLink) &&
             isPriorityPage(cleanLink)
           ) {
-            visitedUrls.add(cleanLink);
+            queuedUrls.add(cleanLink);
             newRequests.push({ url: cleanLink });
           }
         } catch {}
       }
 
       if (newRequests.length > 0) {
-        await crawler.addRequests(newRequests.slice(0, 10));
+        await crawler.addRequests(newRequests.slice(0, 5));
       }
     },
 
-    failedRequestHandler({ request }) {
+    failedRequestHandler({ request, error }) {
       pages.push({
         url: request.url,
-        error: "Failed to scrape this page",
+        error: error?.message || "Failed to scrape this page",
       });
     },
   });
@@ -153,7 +177,7 @@ async function scrapeLeadWebsite(startUrl, maxPages = 5) {
     totalPagesScraped: pages.length,
     emails: [...allEmails],
     phones: [...allPhones],
-    socials: extractSocialLinks([...new Set(allSocialLinks)]),
+    socials: extractSocialLinks(allSocialLinks),
     pages,
   };
 }
@@ -194,13 +218,4 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Lead Scraper API running on port ${PORT}`);
-});
-app.post("/scrape", async (req, res) => {
-    const { url } = req.body;
-
-    res.json({
-        success: true,
-        message: "Scrape route working",
-        url
-    });
 });
