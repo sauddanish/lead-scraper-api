@@ -40,21 +40,59 @@ function extractBusinessLinks(html) {
 
 // -------------------- REGEX EXTRACTIONS --------------------
 function extractEmails(text) {
-  return [...new Set(text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [])];
+  // Extract standard email structures, filtering out asset filenames like flags@2x.webp
+  const matches = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
+  const cleanEmails = matches.filter(email => {
+    const lower = email.toLowerCase();
+    return !lower.includes("2x.webp") && !lower.includes("3x.webp") && !lower.endsWith(".png") && !lower.endsWith(".jpg");
+  });
+  return [...new Set(cleanEmails)];
 }
 
-// 🌟 OPTIMIZED CLEAN PHONE EXTRACTOR: Targets regional/international phone patterns & blocks raw numeric coordinates
+// 🌟 ULTIMATE PHONE CLEANER FIXED PERMANENTLY: Stops CSS coordinates, decimals, and junk
 function extractPhones(text) {
-  // Matches typical UAE formats (+971-X-XXX-XXXX, 04 XXX XXXX, 05X XXXXXXX) and general international lines
-  const phoneRegex = /(?:\+971|00971|0)[23467958]\s?[\d\s.-]{6,11}\d/g;
+  // Broadly match numeric patterns resembling phone arrays (+971..., 04..., 05...)
+  const phoneRegex = /(?:\+971|00971|971|0)[23467958][\d\s.-]{6,12}\d/g;
   const matches = text.match(phoneRegex) || [];
   
   const cleaned = matches
-    .map(num => num.trim().replace(/\s+/g, ' ')) // Strip excess white spacing strings
+    .map(num => {
+      // Standardize character spacing layout blocks
+      return num.trim().replace(/\s+/g, ' ');
+    })
     .filter(num => {
+      // CRITICAL FIX 1: If it contains a decimal period, it is a CSS coordinate value or layout dimension -> KILL IT
+      if (num.includes('.')) return false;
+
+      // Clean out non-digit formatting characters to evaluate real length
       const rawDigits = num.replace(/\D/g, '');
-      // Ensure the string has a realistic length for a phone number and isn't a string of zeros
-      return rawDigits.length >= 7 && rawDigits.length <= 15 && !/^0+$/.test(rawDigits);
+
+      // CRITICAL FIX 2: If the number starts with international 971, strip it to check base validity
+      let baseDigits = rawDigits;
+      if (baseDigits.startsWith('971')) {
+        baseDigits = baseDigits.slice(3);
+      }
+
+      // Real UAE numbers (landline/mobile) must have between 7 and 9 digits remaining after country code removal
+      if (baseDigits.length < 7 || baseDigits.length > 9) return false;
+
+      // CRITICAL FIX 3: Reject repetitive sequences that indicate code settings (e.g., 0000000, 1234567)
+      if (/^(\d)\1+$/.test(baseDigits)) return false;
+      if (baseDigits === "1234567" || baseDigits === "12345678") return false;
+
+      return true;
+    })
+    .map(num => {
+      // Format cleanly for presentation: prepend international +971 layout if missing
+      let formatted = num.replace(/[-.\s]/g, ''); // strip spaces temporarily
+      if (formatted.startsWith('0')) {
+        formatted = '+971 ' + formatted.slice(1);
+      } else if (formatted.startsWith('971')) {
+        formatted = '+' + formatted.slice(0, 3) + ' ' + formatted.slice(3);
+      } else if (!formatted.startsWith('+')) {
+        formatted = '+971 ' + formatted;
+      }
+      return formatted;
     });
 
   return [...new Set(cleaned)];
