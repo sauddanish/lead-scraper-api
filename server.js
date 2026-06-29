@@ -1,6 +1,5 @@
 import express from "express";
 import cors from "cors";
-import axios from "axios";
 import { PlaywrightCrawler, ProxyConfiguration } from "crawlee";
 import { chromium } from "playwright-extra";
 import stealthPlugin from "puppeteer-extra-plugin-stealth";
@@ -11,32 +10,6 @@ chromium.use(stealthPlugin());
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
-
-// -------------------- DYNAMIC FREE PROXY FETCH --------------------
-async function fetchFreeEliteProxies() {
-  try {
-    console.log("📡 Fetching fresh public Elite proxies...");
-    const response = await axios.get(
-      "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text&anonymity=elite&protocol=http",
-      { timeout: 5000 }
-    );
-    
-    const rawText = response.data;
-    
-    // Robust sanitization to strip out hidden '\r' characters that crash Crawlee
-    const proxyArray = rawText
-      .split(/\r?\n/)
-      .map(p => p.trim())
-      .filter(p => p.length > 0 && p.includes(":"))
-      .map(p => `http://${p}`);
-    
-    console.log(`✅ Dynamically loaded ${proxyArray.length} valid Elite proxies!`);
-    return proxyArray.length > 0 ? proxyArray : null;
-  } catch (error) {
-    console.error("⚠️ Failed fetching public proxy array, using fallback list:", error.message);
-    return null;
-  }
-}
 
 // -------------------- BUILD SEARCH URL --------------------
 function buildTargetUrl({ query, country, city, industry, jobTitle }) {
@@ -83,15 +56,19 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
   const phonesSet = new Set();
   const businessLinksSet = new Set();
 
-  // Fetch live proxies dynamically right before compilation loops begin
-  const liveProxies = await fetchFreeEliteProxies();
-
+  // 🌟 FIXED PERMANENTLY: Loaded your premium authenticated Webshare proxy pool strings
   const proxyConfiguration = new ProxyConfiguration({
-    proxyUrls: liveProxies || [
-      "http://65.109.65.239:28080",
-      "http://172.99.189.39:15604",
-      "http://185.111.111.42:10006",
-      "http://51.83.34.150:34214"
+    proxyUrls: [
+      "http://amrztcmk:o4zemvlhwcgy@31.59.20.176:6754",
+      "http://amrztcmk:o4zemvlhwcgy@31.56.127.193:7684",
+      "http://amrztcmk:o4zemvlhwcgy@45.38.107.97:6014",
+      "http://amrztcmk:o4zemvlhwcgy@38.154.203.95:5863",
+      "http://amrztcmk:o4zemvlhwcgy@198.105.121.200:6462",
+      "http://amrztcmk:o4zemvlhwcgy@64.137.96.74:6641",
+      "http://amrztcmk:o4zemvlhwcgy@198.23.243.226:6361",
+      "http://amrztcmk:o4zemvlhwcgy@38.154.185.97:6370",
+      "http://amrztcmk:o4zemvlhwcgy@142.111.67.146:5611",
+      "http://amrztcmk:o4zemvlhwcgy@191.96.254.138:6185"
     ],
   });
 
@@ -117,7 +94,6 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
       },
     },
 
-    // ✅ FIXED PERMANENTLY: Using valid Playwright context browser settings to assign User-Agent strings
     preNavigationHooks: [
       async ({ page }) => {
         await page.context().setExtraHTTPHeaders({
