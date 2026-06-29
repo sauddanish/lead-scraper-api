@@ -1,71 +1,3 @@
-import express from "express";
-import cors from "cors";
-import { PlaywrightCrawler } from "crawlee";
-import { chromium } from "playwright-extra";
-import stealthPlugin from "puppeteer-extra-plugin-stealth";
-
-// 🚀 Inject the open-source stealth patches into Playwright
-chromium.use(stealthPlugin());
-
-const app = express();
-
-app.use(cors());
-app.use(express.json({ limit: "1mb" }));
-
-// -------------------- BUILD SEARCH URL --------------------
-function buildTargetUrl({ query, country, city, industry, jobTitle }) {
-  const searchParts = [query, industry, jobTitle, city, country]
-    .filter(Boolean)
-    .join(" ");
-
-  return `https://www.google.com/search?q=${encodeURIComponent(searchParts)}&num=10`;
-}
-
-// -------------------- BLOCKED DOMAINS --------------------
-function isValidBusinessLink(url) {
-  const blocked = [
-    "google.com",
-    "facebook.com",
-    "linkedin.com",
-    "instagram.com",
-    "twitter.com",
-    "x.com",
-    "youtube.com",
-    "maps.google",
-    "support.google",
-  ];
-
-  return !blocked.some((d) => url.includes(d));
-}
-
-// -------------------- EXTRACT BUSINESS LINKS FROM HTML --------------------
-function extractBusinessLinks(html) {
-  const links = [...html.matchAll(/https?:\/\/[^\s"'<>]+/g)].map((m) => m[0]);
-
-  return links.filter(
-    (link) =>
-      isValidBusinessLink(link) &&
-      !link.includes("google.com") &&
-      !link.includes("search?")
-  );
-}
-
-// -------------------- EMAIL EXTRACTION --------------------
-function extractEmails(text) {
-  return [
-    ...new Set(
-      text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || []
-    ),
-  ];
-}
-
-// -------------------- PHONE EXTRACTION --------------------
-function extractPhones(text) {
-  return [
-    ...new Set(text.match(/(\+?\d[\d\s().-]{7,}\d)/g) || []),
-  ];
-}
-
 // -------------------- SCRAPER ENGINE --------------------
 async function scrapeLeadWebsite(startUrl, maxPages = 3) {
   const safeMaxPages = Math.min(Number(maxPages) || 3, 3);
@@ -86,10 +18,9 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
     requestHandlerTimeoutSecs: 120,
     navigationTimeoutSecs: 60000,
 
-    // 🌟 Override the launcher to run through your stealth core
-    launcher: chromium,
-
+    // ✅ FIXED: Move launcher inside launchContext for Crawlee
     launchContext: {
+      launcher: chromium, 
       launchOptions: {
         headless: true,
         args: [
@@ -97,13 +28,12 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
           "--disable-setuid-sandbox",
           "--disable-dev-shm-usage",
           "--disable-gpu",
-          // 🛡️ Erase the window.navigator.webdriver variable that alerts Google
           "--disable-blink-features=AutomationControlled", 
         ],
       },
     },
 
-    // 🌟 Forge a legitimate human web browser profile fingerprint
+    // Forge a legitimate human web browser profile fingerprint
     preNavigationHooks: [
       async ({ page }) => {
         await page.setUserAgent(
@@ -118,10 +48,10 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
       if (visited.has(currentUrl)) return;
       visited.add(currentUrl);
 
-      // 🕒 Add human-like pacing variance (random 2-4 second hesitation)
+      // Add human-like pacing variance (random 2-4 second hesitation)
       await page.waitForTimeout(Math.floor(Math.random() * 2000) + 2000);
 
-      // 🛡️ Fail-safe check: If caught by Google Captcha, skip immediately to prevent infinite hanging
+      // Fail-safe check: If caught by Google Captcha, skip immediately
       if (page.url().includes("sorry/index") || (await page.$('iframe[src*="recaptcha"]'))) {
         console.error("⚠️ Blocked by Google Security Shield on: " + currentUrl);
         return;
@@ -184,39 +114,3 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
     pages,
   };
 }
-
-// -------------------- MAIN API --------------------
-app.post("/scrape", async (req, res) => {
-  try {
-    const { url, query, country, city, industry, jobTitle, maxPages } = req.body;
-
-    let targetUrl = url;
-    if (!targetUrl) {
-      targetUrl = buildTargetUrl({ query, country, city, industry, jobTitle });
-    }
-
-    const result = await scrapeLeadWebsite(targetUrl, maxPages || 3);
-
-    res.json({
-      success: true,
-      filtersUsed: { url, query, country, city, industry, jobTitle },
-      meta: {
-        emailsFound: result.emails.length,
-        phonesFound: result.phones.length,
-        businessLinksFound: result.businessLinks.length,
-        pagesScraped: result.totalPagesScraped,
-      },
-      data: result,
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-app.get("/", (req, res) => res.json({ success: true, message: "API running" }));
-app.get("/health", (req, res) => res.json({ success: true, status: "healthy" }));
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Scraper running on port ${PORT}`);
-});
