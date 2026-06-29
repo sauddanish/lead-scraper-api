@@ -16,7 +16,7 @@ function buildTargetUrl({ query, country, city, industry, jobTitle }) {
   return `https://www.google.com/search?q=${encodeURIComponent(searchParts)}&num=10`;
 }
 
-// -------------------- FILTER BAD LINKS --------------------
+// -------------------- BLOCKED DOMAINS --------------------
 function isValidBusinessLink(url) {
   const blocked = [
     "google.com",
@@ -26,23 +26,42 @@ function isValidBusinessLink(url) {
     "twitter.com",
     "x.com",
     "youtube.com",
+    "maps.google",
+    "support.google",
   ];
 
   return !blocked.some((d) => url.includes(d));
 }
 
-// -------------------- EXTRACT REAL BUSINESS LINKS FROM GOOGLE --------------------
+// -------------------- EXTRACT BUSINESS LINKS FROM HTML --------------------
 function extractBusinessLinks(html) {
-  const links = [...html.matchAll(/https?:\/\/[^\s"'<>]+/g)].map(m => m[0]);
+  const links = [...html.matchAll(/https?:\/\/[^\s"'<>]+/g)].map((m) => m[0]);
 
-  return links.filter(link =>
-    isValidBusinessLink(link) &&
-    !link.includes("google.com") &&
-    !link.includes("search?")
+  return links.filter(
+    (link) =>
+      isValidBusinessLink(link) &&
+      !link.includes("google.com") &&
+      !link.includes("search?")
   );
 }
 
-// -------------------- SCRAPER --------------------
+// -------------------- EMAIL EXTRACTION --------------------
+function extractEmails(text) {
+  return [
+    ...new Set(
+      text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || []
+    ),
+  ];
+}
+
+// -------------------- PHONE EXTRACTION --------------------
+function extractPhones(text) {
+  return [
+    ...new Set(text.match(/(\+?\d[\d\s().-]{7,}\d)/g) || []),
+  ];
+}
+
+// -------------------- SCRAPER ENGINE --------------------
 async function scrapeLeadWebsite(startUrl, maxPages = 3) {
   const safeMaxPages = Math.min(Number(maxPages) || 3, 3);
 
@@ -52,7 +71,7 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
   const pages = [];
   const emailsSet = new Set();
   const phonesSet = new Set();
-  const finalBusinessLinks = [];
+  const businessLinksSet = new Set();
 
   const crawler = new PlaywrightCrawler({
     maxRequestsPerCrawl: safeMaxPages,
@@ -92,30 +111,21 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
       const html = await page.content().catch(() => "");
 
       // ---------------- EMAILS ----------------
-      const emails = [
-        ...new Set(
-          (bodyText + " " + html).match(
-            /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g
-          ) || []
-        ),
-      ];
+      const emails = extractEmails(bodyText + " " + html);
+      emails.forEach((e) => emailsSet.add(e));
 
       // ---------------- PHONES ----------------
-      const phones = [
-        ...new Set(
-          bodyText.match(/(\+?\d[\d\s().-]{7,}\d)/g) || []
-        ),
-      ];
+      const phones = extractPhones(bodyText);
+      phones.forEach((p) => phonesSet.add(p));
 
-      emails.forEach(e => emailsSet.add(e));
-      phones.forEach(p => phonesSet.add(p));
-
-      // ---------------- EXTRACT LINKS ----------------
-      const links = await page.$$eval("a[href]", a =>
-        a.map(x => x.href)
+      // ---------------- LINKS ----------------
+      const links = await page.$$eval("a[href]", (a) =>
+        a.map((x) => x.href)
       ).catch(() => []);
 
-      finalBusinessLinks.push(...links);
+      const businessLinks = extractBusinessLinks(html);
+
+      businessLinks.forEach((l) => businessLinksSet.add(l));
 
       pages.push({
         url: currentUrl,
@@ -124,15 +134,14 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
         phones,
       });
 
-      // ---------------- EXPAND ONLY REAL BUSINESS SITES ----------------
+      // ---------------- EXPAND ONLY REAL BUSINESS LINKS ----------------
       const newRequests = [];
 
-      for (const link of links.slice(0, 10)) {
+      for (const link of businessLinks.slice(0, 5)) {
         try {
           const clean = link.split("#")[0];
 
           if (
-            isValidBusinessLink(clean) &&
             !visited.has(clean) &&
             !queued.has(clean)
           ) {
@@ -152,12 +161,13 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
 
   return {
     scrapedDomain: new URL(startUrl).origin,
+
     totalPagesScraped: pages.length,
 
     emails: [...emailsSet],
     phones: [...phonesSet],
 
-    businessLinks: [...new Set(finalBusinessLinks)],
+    businessLinks: [...businessLinksSet],
 
     pages,
   };
@@ -206,8 +216,8 @@ app.post("/scrape", async (req, res) => {
       meta: {
         emailsFound: result.emails.length,
         phonesFound: result.phones.length,
-        pagesScraped: result.totalPagesScraped,
         businessLinksFound: result.businessLinks.length,
+        pagesScraped: result.totalPagesScraped,
       },
 
       data: result,
@@ -221,7 +231,7 @@ app.post("/scrape", async (req, res) => {
   }
 });
 
-// -------------------- ROUTES --------------------
+// -------------------- HEALTH ROUTES --------------------
 app.get("/", (req, res) => {
   res.json({ success: true, message: "API running" });
 });
@@ -230,7 +240,7 @@ app.get("/health", (req, res) => {
   res.json({ success: true, status: "healthy" });
 });
 
-// -------------------- START --------------------
+// -------------------- START SERVER --------------------
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, "0.0.0.0", () => {
