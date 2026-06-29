@@ -1,6 +1,11 @@
 import express from "express";
 import cors from "cors";
 import { PlaywrightCrawler } from "crawlee";
+import { chromium } from "playwright-extra";
+import stealthPlugin from "puppeteer-extra-plugin-stealth";
+
+// 🚀 Inject the open-source stealth patches into Playwright
+chromium.use(stealthPlugin());
 
 const app = express();
 
@@ -81,6 +86,9 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
     requestHandlerTimeoutSecs: 120,
     navigationTimeoutSecs: 60000,
 
+    // 🌟 Override the launcher to run through your stealth core
+    launcher: chromium,
+
     launchContext: {
       launchOptions: {
         headless: true,
@@ -88,18 +96,36 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
           "--no-sandbox",
           "--disable-setuid-sandbox",
           "--disable-dev-shm-usage",
-          "--single-process",
-          "--no-zygote",
           "--disable-gpu",
+          // 🛡️ Erase the window.navigator.webdriver variable that alerts Google
+          "--disable-blink-features=AutomationControlled", 
         ],
       },
     },
+
+    // 🌟 Forge a legitimate human web browser profile fingerprint
+    preNavigationHooks: [
+      async ({ page }) => {
+        await page.setUserAgent(
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        );
+      },
+    ],
 
     async requestHandler({ request, page }) {
       const currentUrl = request.url;
 
       if (visited.has(currentUrl)) return;
       visited.add(currentUrl);
+
+      // 🕒 Add human-like pacing variance (random 2-4 second hesitation)
+      await page.waitForTimeout(Math.floor(Math.random() * 2000) + 2000);
+
+      // 🛡️ Fail-safe check: If caught by Google Captcha, skip immediately to prevent infinite hanging
+      if (page.url().includes("sorry/index") || (await page.$('iframe[src*="recaptcha"]'))) {
+        console.error("⚠️ Blocked by Google Security Shield on: " + currentUrl);
+        return;
+      }
 
       await page.goto(currentUrl, {
         waitUntil: "domcontentloaded",
@@ -110,21 +136,17 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
       const bodyText = await page.locator("body").innerText().catch(() => "");
       const html = await page.content().catch(() => "");
 
-      // ---------------- EMAILS ----------------
       const emails = extractEmails(bodyText + " " + html);
       emails.forEach((e) => emailsSet.add(e));
 
-      // ---------------- PHONES ----------------
       const phones = extractPhones(bodyText);
       phones.forEach((p) => phonesSet.add(p));
 
-      // ---------------- LINKS ----------------
       const links = await page.$$eval("a[href]", (a) =>
         a.map((x) => x.href)
       ).catch(() => []);
 
       const businessLinks = extractBusinessLinks(html);
-
       businessLinks.forEach((l) => businessLinksSet.add(l));
 
       pages.push({
@@ -134,17 +156,11 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
         phones,
       });
 
-      // ---------------- EXPAND ONLY REAL BUSINESS LINKS ----------------
       const newRequests = [];
-
       for (const link of businessLinks.slice(0, 5)) {
         try {
           const clean = link.split("#")[0];
-
-          if (
-            !visited.has(clean) &&
-            !queued.has(clean)
-          ) {
+          if (!visited.has(clean) && !queued.has(clean)) {
             queued.add(clean);
             newRequests.push({ url: clean });
           }
@@ -161,14 +177,10 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
 
   return {
     scrapedDomain: new URL(startUrl).origin,
-
     totalPagesScraped: pages.length,
-
     emails: [...emailsSet],
     phones: [...phonesSet],
-
     businessLinks: [...businessLinksSet],
-
     pages,
   };
 }
@@ -176,73 +188,35 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
 // -------------------- MAIN API --------------------
 app.post("/scrape", async (req, res) => {
   try {
-    const {
-      url,
-      query,
-      country,
-      city,
-      industry,
-      jobTitle,
-      maxPages,
-    } = req.body;
+    const { url, query, country, city, industry, jobTitle, maxPages } = req.body;
 
     let targetUrl = url;
-
-    // AUTO BUILD SEARCH QUERY
     if (!targetUrl) {
-      targetUrl = buildTargetUrl({
-        query,
-        country,
-        city,
-        industry,
-        jobTitle,
-      });
+      targetUrl = buildTargetUrl({ query, country, city, industry, jobTitle });
     }
 
     const result = await scrapeLeadWebsite(targetUrl, maxPages || 3);
 
     res.json({
       success: true,
-
-      filtersUsed: {
-        url,
-        query,
-        country,
-        city,
-        industry,
-        jobTitle,
-      },
-
+      filtersUsed: { url, query, country, city, industry, jobTitle },
       meta: {
         emailsFound: result.emails.length,
         phonesFound: result.phones.length,
         businessLinksFound: result.businessLinks.length,
         pagesScraped: result.totalPagesScraped,
       },
-
       data: result,
     });
-
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// -------------------- HEALTH ROUTES --------------------
-app.get("/", (req, res) => {
-  res.json({ success: true, message: "API running" });
-});
+app.get("/", (req, res) => res.json({ success: true, message: "API running" }));
+app.get("/health", (req, res) => res.json({ success: true, status: "healthy" }));
 
-app.get("/health", (req, res) => {
-  res.json({ success: true, status: "healthy" });
-});
-
-// -------------------- START SERVER --------------------
 const PORT = process.env.PORT || 3000;
-
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Scraper running on port ${PORT}`);
 });
