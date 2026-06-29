@@ -43,8 +43,21 @@ function extractEmails(text) {
   return [...new Set(text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [])];
 }
 
+// 🌟 OPTIMIZED CLEAN PHONE EXTRACTOR: Targets regional/international phone patterns & blocks raw numeric coordinates
 function extractPhones(text) {
-  return [...new Set(text.match(/(\+?\d[\d\s().-]{7,}\d)/g) || [])];
+  // Matches typical UAE formats (+971-X-XXX-XXXX, 04 XXX XXXX, 05X XXXXXXX) and general international lines
+  const phoneRegex = /(?:\+971|00971|0)[23467958]\s?[\d\s.-]{6,11}\d/g;
+  const matches = text.match(phoneRegex) || [];
+  
+  const cleaned = matches
+    .map(num => num.trim().replace(/\s+/g, ' ')) // Strip excess white spacing strings
+    .filter(num => {
+      const rawDigits = num.replace(/\D/g, '');
+      // Ensure the string has a realistic length for a phone number and isn't a string of zeros
+      return rawDigits.length >= 7 && rawDigits.length <= 15 && !/^0+$/.test(rawDigits);
+    });
+
+  return [...new Set(cleaned)];
 }
 
 // -------------------- SCRAPER ENGINE --------------------
@@ -62,9 +75,8 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
     maxRequestsPerCrawl: safeMaxPages,
     minConcurrency: 1,
     maxConcurrency: 1,
-    requestHandlerTimeoutSecs: 45, // Snappy timeout limits for non-responsive target endpoints
+    requestHandlerTimeoutSecs: 45, 
     navigationTimeoutSecs: 30000,
-    // 🌟 REMOVED: Broken host bridge Tor proxy configurations clean execution paths
 
     useSessionPool: true,
     sessionPoolOptions: {
@@ -125,7 +137,6 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
 
       pages.push({ url: currentUrl, title, emails, phones });
 
-      // Gather matching contact/about sub-directory relative structural pathways
       const subLinks = await page.$$eval("a[href]", (elements) => elements.map((el) => el.href)).catch(() => []);
       const currentOrigin = new URL(currentUrl).origin;
       const internalRequests = [];
@@ -201,7 +212,6 @@ app.post("/scrape", async (req, res) => {
     let totalPagesScrapedCount = 0;
     let successfulPagesLog = [];
 
-    // Iterative looping matrix over top validated targets
     const domainsToProcess = initialBusinessLinks.slice(0, 4);
     
     for (const targetedUrl of domainsToProcess) {
