@@ -23,7 +23,7 @@ async function fetchFreeEliteProxies() {
     
     const rawText = response.data;
     
-    // ✅ FIXED: Robust sanitization to strip out hidden '\r' characters that crash Crawlee
+    // Robust sanitization to strip out hidden '\r' characters that crash Crawlee
     const proxyArray = rawText
       .split(/\r?\n/)
       .map(p => p.trim())
@@ -63,6 +63,7 @@ function extractBusinessLinks(html) {
   );
 }
 
+// -------------------- REGEX EXTRACTIONS --------------------
 function extractEmails(text) {
   return [...new Set(text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [])];
 }
@@ -116,11 +117,12 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
       },
     },
 
+    // ✅ FIXED PERMANENTLY: Using valid Playwright context browser settings to assign User-Agent strings
     preNavigationHooks: [
       async ({ page }) => {
-        await page.setUserAgent(
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        );
+        await page.context().setExtraHTTPHeaders({
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        });
       },
     ],
 
