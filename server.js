@@ -1,21 +1,16 @@
 import express from "express";
 import cors from "cors";
 import axios from "axios";
-import { PlaywrightCrawler, ProxyConfiguration } from "crawlee";
+import { PlaywrightCrawler } from "crawlee";
 import { chromium } from "playwright-extra";
 import stealthPlugin from "puppeteer-extra-plugin-stealth";
 
 // Activate open-source stealth patches
 chromium.use(stealthPlugin());
 
-const app = reportExpressErrors(express());
+const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
-
-// Helper error tracker decorator
-function reportExpressErrors(appInstance) {
-  return appInstance;
-}
 
 // -------------------- BUILD SEARCH URL --------------------
 function buildTargetUrl({ query, country, city, industry, jobTitle }) {
@@ -63,20 +58,13 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
   const phonesSet = new Set();
   const businessLinksSet = new Set();
 
-  // 🌟 BULLETPROOF PROXY TREE: Configured to hit your host Tor service routing bridge
-  const proxyConfiguration = new ProxyConfiguration({
-    proxyUrls: [
-      "socks5://172.17.0.1:9050"
-    ],
-  });
-
   const crawler = new PlaywrightCrawler({
     maxRequestsPerCrawl: safeMaxPages,
     minConcurrency: 1,
     maxConcurrency: 1,
-    requestHandlerTimeoutSecs: 45, // Snappy timeouts so we don't hang on broken sites
+    requestHandlerTimeoutSecs: 45, // Snappy timeout limits for non-responsive target endpoints
     navigationTimeoutSecs: 30000,
-    proxyConfiguration, 
+    // 🌟 REMOVED: Broken host bridge Tor proxy configurations clean execution paths
 
     useSessionPool: true,
     sessionPoolOptions: {
@@ -110,26 +98,19 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
       },
     ],
 
-    async requestHandler({ request, page, session }) {
+    async requestHandler({ request, page }) {
       const currentUrl = request.url;
       if (visited.has(currentUrl)) return;
       visited.add(currentUrl);
 
       console.log(`🔎 Navigating browser to corporate target site: ${currentUrl}`);
 
-      const response = await page.goto(currentUrl, {
+      await page.goto(currentUrl, {
         waitUntil: "domcontentloaded",
         timeout: 30000,
       }).catch(() => null);
 
       await page.waitForTimeout(1000);
-
-      // Handle block metrics gracefully by cycling the Tor circuit node
-      if (response && response.status() === 429) {
-        console.error(`⚠️ Target business server threw a 429 block response.`);
-        if (session) session.retire(); 
-        throw new Error("Retrying via fresh Tor node context assignment.");
-      }
 
       // -------------------- CORPORATE SITE EXTRACTION --------------------
       const title = await page.title().catch(() => "");
@@ -144,7 +125,7 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
 
       pages.push({ url: currentUrl, title, emails, phones });
 
-      // Gather matching sub-directory paths
+      // Gather matching contact/about sub-directory relative structural pathways
       const subLinks = await page.$$eval("a[href]", (elements) => elements.map((el) => el.href)).catch(() => []);
       const currentOrigin = new URL(currentUrl).origin;
       const internalRequests = [];
@@ -215,21 +196,19 @@ app.post("/scrape", async (req, res) => {
       });
     }
 
-    // 🌟 SEED ACCUMULATORS FOR GLOBAL RESULTS OVER THE LOOP MULTIPLEX
     let totalEmails = new Set();
     let totalPhones = new Set();
     let totalPagesScrapedCount = 0;
     let successfulPagesLog = [];
 
-    // 🌟 ITERATIVE LOOP ENGINE: Process the top 4 discovered domains so one bad site won't kill execution
+    // Iterative looping matrix over top validated targets
     const domainsToProcess = initialBusinessLinks.slice(0, 4);
     
     for (const targetedUrl of domainsToProcess) {
       try {
-        console.log(`🚀 Processing target site pipeline entry: ${targetedUrl}`);
+        console.log(`🚀 Processing target site pipeline entry directly: ${targetedUrl}`);
         const result = await scrapeLeadWebsite(targetedUrl, maxPages || 3);
         
-        // Accumulate data payloads safely
         result.emails.forEach(e => totalEmails.add(e));
         result.phones.forEach(p => totalPhones.add(p));
         totalPagesScrapedCount += result.totalPagesScraped;
@@ -237,7 +216,6 @@ app.post("/scrape", async (req, res) => {
         
       } catch (loopError) {
         console.error(`⚠️ Skipped target entry [${targetedUrl}] due to connection issues:`, loopError.message);
-        // Continue loop pipeline to harvest remaining valid candidates
       }
     }
 
