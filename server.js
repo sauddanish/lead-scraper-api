@@ -1,72 +1,8 @@
-import express from "express";
-import cors from "cors";
-import { PlaywrightCrawler } from "crawlee";
-
-const app = express();
-
-app.use(cors());
-app.use(express.json({ limit: "1mb" }));
-
-// -------------------- URL NORMALIZER --------------------
-function normalizeUrl(input) {
-  if (!input) throw new Error("URL is required");
-
-  let url = input.trim();
-
-  if (!url.startsWith("http://") && !url.startsWith("https://")) {
-    url = "https://" + url;
-  }
-
-  return new URL(url).toString();
-}
-
-// -------------------- EXTRACTORS --------------------
-function extractEmails(text) {
-  return [
-    ...new Set(
-      text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || []
-    ),
-  ];
-}
-
-function extractPhones(text) {
-  return [
-    ...new Set(text.match(/(\+?\d[\d\s().-]{7,}\d)/g) || []),
-  ];
-}
-
-function isPriorityPage(url) {
-  const lower = url.toLowerCase();
-
-  return (
-    lower.includes("contact") ||
-    lower.includes("about") ||
-    lower.includes("team") ||
-    lower.includes("staff") ||
-    lower.includes("people") ||
-    lower.includes("leadership")
-  );
-}
-
-function extractSocialLinks(links) {
-  const uniqueLinks = [...new Set(links)];
-
-  return {
-    linkedin: uniqueLinks.filter((l) => l.includes("linkedin.com")),
-    facebook: uniqueLinks.filter((l) => l.includes("facebook.com")),
-    instagram: uniqueLinks.filter((l) => l.includes("instagram.com")),
-    twitter: uniqueLinks.filter(
-      (l) => l.includes("twitter.com") || l.includes("x.com")
-    ),
-  };
-}
-
-// -------------------- MAIN SCRAPER --------------------
 async function scrapeLeadWebsite(startUrl, maxPages = 5) {
   const url = normalizeUrl(startUrl);
   const origin = new URL(url).origin;
 
-  const safeMaxPages = Math.min(Number(maxPages) || 5, 8);
+  const safeMaxPages = Math.min(Number(maxPages) || 3, 5);
 
   const visitedUrls = new Set();
   const queuedUrls = new Set();
@@ -77,11 +13,10 @@ async function scrapeLeadWebsite(startUrl, maxPages = 5) {
   const allSocialLinks = [];
 
   const crawler = new PlaywrightCrawler({
+    // 🔥 HARD LIMIT (CRASH FIX)
     maxRequestsPerCrawl: safeMaxPages,
-
-    // 🔥 CRITICAL VPS STABILITY FIX
-    minConcurrency: 1,
     maxConcurrency: 1,
+    minConcurrency: 1,
 
     requestHandlerTimeoutSecs: 120,
     navigationTimeoutSecs: 60000,
@@ -90,7 +25,7 @@ async function scrapeLeadWebsite(startUrl, maxPages = 5) {
       launchOptions: {
         headless: true,
 
-        // 🔥 VPS SAFE CHROMIUM FLAGS (IMPORTANT FIX)
+        // 🔥 VPS STABLE MODE
         args: [
           "--no-sandbox",
           "--disable-setuid-sandbox",
@@ -102,6 +37,7 @@ async function scrapeLeadWebsite(startUrl, maxPages = 5) {
           "--disable-background-networking",
           "--disable-sync",
           "--mute-audio",
+          "--no-first-run"
         ],
       },
     },
@@ -112,18 +48,21 @@ async function scrapeLeadWebsite(startUrl, maxPages = 5) {
       if (visitedUrls.has(currentUrl)) return;
       visitedUrls.add(currentUrl);
 
-      await page
-        .goto(currentUrl, {
+      try {
+        await page.goto(currentUrl, {
           waitUntil: "domcontentloaded",
-          timeout: 60000,
-        })
-        .catch(() => null);
+          timeout: 45000,
+        });
+      } catch {
+        return;
+      }
 
       const title = await page.title().catch(() => "");
       const bodyText = await page
         .locator("body")
         .innerText()
         .catch(() => "");
+
       const html = await page.content().catch(() => "");
 
       const pageEmails = extractEmails(bodyText + " " + html);
@@ -145,10 +84,12 @@ async function scrapeLeadWebsite(startUrl, maxPages = 5) {
         phones: pagePhones,
       });
 
-      // ---------------- SAFE LINK DISCOVERY ----------------
+      // 🔥 STRICT LIMIT (STOP CRASH LOOP)
+      if (pages.length >= safeMaxPages) return;
+
       const newRequests = [];
 
-      for (const link of links) {
+      for (const link of links.slice(0, 20)) {
         try {
           const cleanLink = link.split("#")[0];
           const parsed = new URL(cleanLink);
@@ -165,15 +106,14 @@ async function scrapeLeadWebsite(startUrl, maxPages = 5) {
         } catch {}
       }
 
-      if (newRequests.length > 0) {
-        await crawler.addRequests(newRequests.slice(0, 3));
-      }
+      // 🔥 VERY IMPORTANT LIMIT
+      await crawler.addRequests(newRequests.slice(0, 2));
     },
 
-    failedRequestHandler({ request, error }) {
+    failedRequestHandler({ request }) {
       pages.push({
         url: request.url,
-        error: error?.message || "Scrape failed",
+        error: "Scrape failed",
       });
     },
   });
@@ -186,54 +126,7 @@ async function scrapeLeadWebsite(startUrl, maxPages = 5) {
     totalPagesScraped: pages.length,
     emails: [...allEmails],
     phones: [...allPhones],
-    socials: extractSocialLinks(allSocialLinks),
+    socials: extractSocialLinks([...new Set(allSocialLinks)]),
     pages,
   };
 }
-
-// -------------------- ROUTES --------------------
-app.get("/", (req, res) => {
-  res.json({
-    success: true,
-    message: "Lead Scraper API is running",
-  });
-});
-
-app.get("/health", (req, res) => {
-  res.json({
-    success: true,
-    status: "healthy",
-  });
-});
-
-app.post("/scrape", async (req, res) => {
-  try {
-    const { url, maxPages } = req.body;
-
-    if (!url) {
-      return res.status(400).json({
-        success: false,
-        error: "URL is required",
-      });
-    }
-
-    const result = await scrapeLeadWebsite(url, maxPages || 5);
-
-    res.json({
-      success: true,
-      data: result,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-// -------------------- START SERVER --------------------
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Lead Scraper API running on port ${PORT}`);
-});
