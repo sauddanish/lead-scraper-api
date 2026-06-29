@@ -5,11 +5,11 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 
-# Install Playwright properly
+COPY . .
+
+# Install Playwright AFTER full project is available
 RUN npx playwright install --with-deps
 RUN npx playwright install chromium
-
-COPY . .
 
 EXPOSE 3000
 
