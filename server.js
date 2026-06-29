@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import axios from "axios"; // 🌟 Required to fetch free proxies programmatically
+import axios from "axios";
 import { PlaywrightCrawler, ProxyConfiguration } from "crawlee";
 import { chromium } from "playwright-extra";
 import stealthPlugin from "puppeteer-extra-plugin-stealth";
@@ -16,21 +16,21 @@ app.use(express.json({ limit: "1mb" }));
 async function fetchFreeEliteProxies() {
   try {
     console.log("📡 Fetching fresh public Elite proxies...");
-    // Fetches live tested HTTP Elite proxies directly via ProxyScrape API
     const response = await axios.get(
       "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text&anonymity=elite&protocol=http",
       { timeout: 5000 }
     );
     
     const rawText = response.data;
-    // Split the text file rows into a clean array and prepend http://
+    
+    // ✅ FIXED: Robust sanitization to strip out hidden '\r' characters that crash Crawlee
     const proxyArray = rawText
-      .split("\n")
+      .split(/\r?\n/)
       .map(p => p.trim())
-      .filter(Boolean)
+      .filter(p => p.length > 0 && p.includes(":"))
       .map(p => `http://${p}`);
     
-    console.log(`✅ Dynamically loaded ${proxyArray.length} fresh Elite proxies!`);
+    console.log(`✅ Dynamically loaded ${proxyArray.length} valid Elite proxies!`);
     return proxyArray.length > 0 ? proxyArray : null;
   } catch (error) {
     console.error("⚠️ Failed fetching public proxy array, using fallback list:", error.message);
@@ -82,12 +82,11 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
   const phonesSet = new Set();
   const businessLinksSet = new Set();
 
-  // 🌟 1. FETCH LIVE PROXIES BEFORE CRAWL
+  // Fetch live proxies dynamically right before compilation loops begin
   const liveProxies = await fetchFreeEliteProxies();
 
   const proxyConfiguration = new ProxyConfiguration({
     proxyUrls: liveProxies || [
-      // Fallback static public elite proxies if API fails temporarily
       "http://65.109.65.239:28080",
       "http://172.99.189.39:15604",
       "http://185.111.111.42:10006",
@@ -101,8 +100,6 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
     maxConcurrency: 1,
     requestHandlerTimeoutSecs: 120,
     navigationTimeoutSecs: 60000,
-    
-    // 🌟 2. INJECT PROXY CONFIGURATION
     proxyConfiguration, 
 
     launchContext: {
@@ -134,22 +131,22 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
 
       console.log(`🔎 Navigating browser to: ${currentUrl}`);
 
-      // Navigate to the page FIRST
+      // Navigate to target path location first
       await page.goto(currentUrl, {
         waitUntil: "domcontentloaded",
         timeout: 60000,
       }).catch(() => null);
 
-      // Random human-like delay
+      // Random human pacing break
       await page.waitForTimeout(Math.floor(Math.random() * 2000) + 1500);
 
-      // Anti-bot blocker verification check
+      // Verify active URL state against security checkpoints
       if (page.url().includes("sorry/index") || (await page.$('iframe[src*="recaptcha"]'))) {
         console.error("⚠️ Caught by Google Bot Detection Shield on: " + currentUrl);
         return;
       }
 
-      // Check if parsing Google Search results page
+      // Route A: Parse raw Google Search engine result layers
       if (currentUrl.includes("google.com/search")) {
         console.log("Analyzing Google search results layout...");
         await page.waitForSelector("a[href]", { timeout: 5000 }).catch(() => null);
@@ -172,10 +169,10 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
         if (targetRequests.length > 0) {
           await crawler.addRequests(targetRequests);
         }
-        return;
+        return; 
       }
 
-      // Deep scraping targeted business landing pages
+      // Route B: Deep crawl target corporate business landing paths
       const title = await page.title().catch(() => "");
       const bodyText = await page.locator("body").innerText().catch(() => "");
       const html = await page.content().catch(() => "");
@@ -211,6 +208,7 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
     },
   });
 
+  // Target direct clean initialization array inputs
   await crawler.addRequests([{ url: startUrl }]);
   await crawler.run();
 
@@ -234,6 +232,7 @@ app.post("/scrape", async (req, res) => {
       targetUrl = buildTargetUrl({ query, country, city, industry, jobTitle });
     }
 
+    console.log(`🚀 Triggering scraper engine sequence for target: ${targetUrl}`);
     const result = await scrapeLeadWebsite(targetUrl, maxPages || 3);
 
     res.json({
@@ -252,9 +251,11 @@ app.post("/scrape", async (req, res) => {
   }
 });
 
+// -------------------- HEALTH ROUTES --------------------
 app.get("/", (req, res) => res.json({ success: true, message: "API running" }));
 app.get("/health", (req, res) => res.json({ success: true, status: "healthy" }));
 
+// -------------------- START SERVER --------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Scraper running on port ${PORT}`);
