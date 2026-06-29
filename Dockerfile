@@ -31,4 +31,4 @@ RUN npx playwright install chromium
 EXPOSE 3000
 
 CMD ["npm", "start"]
-ENV NODE_OPTIONS=--max-old-space-size=1024
+ENV NODE_OPTIONS=--max-old-space-size=512
