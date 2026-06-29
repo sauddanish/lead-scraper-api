@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
-import { PlaywrightCrawler } from "crawlee";
+import axios from "axios"; // 🌟 Required to fetch free proxies programmatically
+import { PlaywrightCrawler, ProxyConfiguration } from "crawlee";
 import { chromium } from "playwright-extra";
 import stealthPlugin from "puppeteer-extra-plugin-stealth";
 
@@ -10,6 +11,32 @@ chromium.use(stealthPlugin());
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
+
+// -------------------- DYNAMIC FREE PROXY FETCH --------------------
+async function fetchFreeEliteProxies() {
+  try {
+    console.log("📡 Fetching fresh public Elite proxies...");
+    // Fetches live tested HTTP Elite proxies directly via ProxyScrape API
+    const response = await axios.get(
+      "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text&anonymity=elite&protocol=http",
+      { timeout: 5000 }
+    );
+    
+    const rawText = response.data;
+    // Split the text file rows into a clean array and prepend http://
+    const proxyArray = rawText
+      .split("\n")
+      .map(p => p.trim())
+      .filter(Boolean)
+      .map(p => `http://${p}`);
+    
+    console.log(`✅ Dynamically loaded ${proxyArray.length} fresh Elite proxies!`);
+    return proxyArray.length > 0 ? proxyArray : null;
+  } catch (error) {
+    console.error("⚠️ Failed fetching public proxy array, using fallback list:", error.message);
+    return null;
+  }
+}
 
 // -------------------- BUILD SEARCH URL --------------------
 function buildTargetUrl({ query, country, city, industry, jobTitle }) {
@@ -46,7 +73,7 @@ function extractPhones(text) {
 
 // -------------------- SCRAPER ENGINE --------------------
 async function scrapeLeadWebsite(startUrl, maxPages = 3) {
-  const safeMaxPages = Math.min(Number(maxPages) || 3, 3);
+  const safeMaxPages = Math.max(Number(maxPages) || 3, 5);
   const visited = new Set();
   const queued = new Set();
 
@@ -55,14 +82,29 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
   const phonesSet = new Set();
   const businessLinksSet = new Set();
 
+  // 🌟 1. FETCH LIVE PROXIES BEFORE CRAWL
+  const liveProxies = await fetchFreeEliteProxies();
+
+  const proxyConfiguration = new ProxyConfiguration({
+    proxyUrls: liveProxies || [
+      // Fallback static public elite proxies if API fails temporarily
+      "http://65.109.65.239:28080",
+      "http://172.99.189.39:15604",
+      "http://185.111.111.42:10006",
+      "http://51.83.34.150:34214"
+    ],
+  });
+
   const crawler = new PlaywrightCrawler({
     maxRequestsPerCrawl: safeMaxPages,
     minConcurrency: 1,
     maxConcurrency: 1,
     requestHandlerTimeoutSecs: 120,
     navigationTimeoutSecs: 60000,
+    
+    // 🌟 2. INJECT PROXY CONFIGURATION
+    proxyConfiguration, 
 
-    // ✅ FIXED PERMANENTLY: Launcher positioned correctly for Crawlee standard formats
     launchContext: {
       launcher: chromium,
       launchOptions: {
@@ -90,13 +132,50 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
       if (visited.has(currentUrl)) return;
       visited.add(currentUrl);
 
-      await page.waitForTimeout(Math.floor(Math.random() * 2000) + 2000);
+      console.log(`🔎 Navigating browser to: ${currentUrl}`);
 
-      if (page.url().includes("sorry/index")) {
-        console.error("⚠️ Caught by Google Bot Detection.");
+      // Navigate to the page FIRST
+      await page.goto(currentUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: 60000,
+      }).catch(() => null);
+
+      // Random human-like delay
+      await page.waitForTimeout(Math.floor(Math.random() * 2000) + 1500);
+
+      // Anti-bot blocker verification check
+      if (page.url().includes("sorry/index") || (await page.$('iframe[src*="recaptcha"]'))) {
+        console.error("⚠️ Caught by Google Bot Detection Shield on: " + currentUrl);
         return;
       }
 
+      // Check if parsing Google Search results page
+      if (currentUrl.includes("google.com/search")) {
+        console.log("Analyzing Google search results layout...");
+        await page.waitForSelector("a[href]", { timeout: 5000 }).catch(() => null);
+        
+        const htmlContent = await page.content().catch(() => "");
+        const discoveredLinks = extractBusinessLinks(htmlContent);
+
+        console.log(`Found ${discoveredLinks.length} valid business websites from search.`);
+
+        const targetRequests = [];
+        for (const link of discoveredLinks.slice(0, 5)) {
+          const cleanLink = link.split("#")[0];
+          if (!visited.has(cleanLink) && !queued.has(cleanLink)) {
+            queued.add(cleanLink);
+            businessLinksSet.add(cleanLink);
+            targetRequests.push({ url: cleanLink });
+          }
+        }
+
+        if (targetRequests.length > 0) {
+          await crawler.addRequests(targetRequests);
+        }
+        return;
+      }
+
+      // Deep scraping targeted business landing pages
       const title = await page.title().catch(() => "");
       const bodyText = await page.locator("body").innerText().catch(() => "");
       const html = await page.content().catch(() => "");
@@ -104,37 +183,39 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
       const emails = extractEmails(bodyText + " " + html);
       emails.forEach((e) => emailsSet.add(e));
 
-      const phones = extractPhones(bodyText);
+      const phones = extractPhones(bodyText + " " + html);
       phones.forEach((p) => phonesSet.add(p));
-
-      const businessLinks = extractBusinessLinks(html);
-      businessLinks.forEach((l) => businessLinksSet.add(l));
 
       pages.push({ url: currentUrl, title, emails, phones });
 
-      const newRequests = [];
-      for (const link of businessLinks.slice(0, 5)) {
+      const subLinks = await page.$$eval("a[href]", (elements) => elements.map((el) => el.href)).catch(() => []);
+      const currentOrigin = new URL(currentUrl).origin;
+      const internalRequests = [];
+
+      for (const link of subLinks) {
         try {
-          const clean = link.split("#")[0];
-          if (!visited.has(clean) && !queued.has(clean)) {
-            queued.add(clean);
-            newRequests.push({ url: clean });
+          const cleanSub = link.split("#")[0];
+          if (cleanSub.startsWith(currentOrigin) && !visited.has(cleanSub) && !queued.has(cleanSub)) {
+            const lowerPath = cleanSub.toLowerCase();
+            if (lowerPath.includes("contact") || lowerPath.includes("about") || lowerPath.includes("info")) {
+              queued.add(cleanSub);
+              internalRequests.push({ url: cleanSub });
+            }
           }
         } catch {}
       }
 
-      if (newRequests.length > 0) {
-        await crawler.addRequests(newRequests.slice(0, 2));
+      if (internalRequests.length > 0) {
+        await crawler.addRequests(internalRequests.slice(0, 2));
       }
     },
   });
 
-  // ✅ FIXED PERMANENTLY: Add initial target directly as a string array parameter
-  await crawler.addRequests([startUrl]);
+  await crawler.addRequests([{ url: startUrl }]);
   await crawler.run();
 
   return {
-    scrapedDomain: new URL(startUrl).origin,
+    scrapedDomain: startUrl.includes("google.com") ? "https://www.google.com" : new URL(startUrl).origin,
     totalPagesScraped: pages.length,
     emails: [...emailsSet],
     phones: [...phonesSet],
@@ -153,7 +234,6 @@ app.post("/scrape", async (req, res) => {
       targetUrl = buildTargetUrl({ query, country, city, industry, jobTitle });
     }
 
-    console.log(`Starting execution sequence for: ${targetUrl}`);
     const result = await scrapeLeadWebsite(targetUrl, maxPages || 3);
 
     res.json({
