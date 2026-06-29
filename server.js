@@ -1,7 +1,52 @@
+import express from "express";
+import cors from "cors";
+import { PlaywrightCrawler } from "crawlee";
+import { chromium } from "playwright-extra";
+import stealthPlugin from "puppeteer-extra-plugin-stealth";
+
+// Activate open-source stealth patches
+chromium.use(stealthPlugin());
+
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: "1mb" }));
+
+// -------------------- BUILD SEARCH URL --------------------
+function buildTargetUrl({ query, country, city, industry, jobTitle }) {
+  const searchParts = [query, industry, jobTitle, city, country]
+    .filter(Boolean)
+    .join(" ");
+
+  return `https://www.google.com/search?q=${encodeURIComponent(searchParts)}&num=10`;
+}
+
+// -------------------- BLOCKED DOMAINS --------------------
+function isValidBusinessLink(url) {
+  const blocked = [
+    "google.com", "facebook.com", "linkedin.com", "instagram.com",
+    "twitter.com", "x.com", "youtube.com", "maps.google", "support.google"
+  ];
+  return !blocked.some((d) => url.includes(d));
+}
+
+function extractBusinessLinks(html) {
+  const links = [...html.matchAll(/https?:\/\/[^\s"'<>]+/g)].map((m) => m[0]);
+  return links.filter(
+    (link) => isValidBusinessLink(link) && !link.includes("search?")
+  );
+}
+
+function extractEmails(text) {
+  return [...new Set(text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [])];
+}
+
+function extractPhones(text) {
+  return [...new Set(text.match(/(\+?\d[\d\s().-]{7,}\d)/g) || [])];
+}
+
 // -------------------- SCRAPER ENGINE --------------------
 async function scrapeLeadWebsite(startUrl, maxPages = 3) {
   const safeMaxPages = Math.min(Number(maxPages) || 3, 3);
-
   const visited = new Set();
   const queued = new Set();
 
@@ -14,13 +59,12 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
     maxRequestsPerCrawl: safeMaxPages,
     minConcurrency: 1,
     maxConcurrency: 1,
-
     requestHandlerTimeoutSecs: 120,
     navigationTimeoutSecs: 60000,
 
-    // ✅ FIXED: Move launcher inside launchContext for Crawlee
+    // ✅ FIXED PERMANENTLY: Launcher positioned correctly for Crawlee standard formats
     launchContext: {
-      launcher: chromium, 
+      launcher: chromium,
       launchOptions: {
         headless: true,
         args: [
@@ -28,12 +72,11 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
           "--disable-setuid-sandbox",
           "--disable-dev-shm-usage",
           "--disable-gpu",
-          "--disable-blink-features=AutomationControlled", 
+          "--disable-blink-features=AutomationControlled"
         ],
       },
     },
 
-    // Forge a legitimate human web browser profile fingerprint
     preNavigationHooks: [
       async ({ page }) => {
         await page.setUserAgent(
@@ -44,23 +87,15 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
 
     async requestHandler({ request, page }) {
       const currentUrl = request.url;
-
       if (visited.has(currentUrl)) return;
       visited.add(currentUrl);
 
-      // Add human-like pacing variance (random 2-4 second hesitation)
       await page.waitForTimeout(Math.floor(Math.random() * 2000) + 2000);
 
-      // Fail-safe check: If caught by Google Captcha, skip immediately
-      if (page.url().includes("sorry/index") || (await page.$('iframe[src*="recaptcha"]'))) {
-        console.error("⚠️ Blocked by Google Security Shield on: " + currentUrl);
+      if (page.url().includes("sorry/index")) {
+        console.error("⚠️ Caught by Google Bot Detection.");
         return;
       }
-
-      await page.goto(currentUrl, {
-        waitUntil: "domcontentloaded",
-        timeout: 60000,
-      }).catch(() => null);
 
       const title = await page.title().catch(() => "");
       const bodyText = await page.locator("body").innerText().catch(() => "");
@@ -72,19 +107,10 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
       const phones = extractPhones(bodyText);
       phones.forEach((p) => phonesSet.add(p));
 
-      const links = await page.$$eval("a[href]", (a) =>
-        a.map((x) => x.href)
-      ).catch(() => []);
-
       const businessLinks = extractBusinessLinks(html);
       businessLinks.forEach((l) => businessLinksSet.add(l));
 
-      pages.push({
-        url: currentUrl,
-        title,
-        emails,
-        phones,
-      });
+      pages.push({ url: currentUrl, title, emails, phones });
 
       const newRequests = [];
       for (const link of businessLinks.slice(0, 5)) {
@@ -103,7 +129,9 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
     },
   });
 
-  await crawler.run([{ url: startUrl }]);
+  // ✅ FIXED PERMANENTLY: Add initial target directly as a string array parameter
+  await crawler.addRequests([startUrl]);
+  await crawler.run();
 
   return {
     scrapedDomain: new URL(startUrl).origin,
@@ -114,3 +142,40 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
     pages,
   };
 }
+
+// -------------------- MAIN API --------------------
+app.post("/scrape", async (req, res) => {
+  try {
+    const { url, query, country, city, industry, jobTitle, maxPages } = req.body;
+
+    let targetUrl = url;
+    if (!targetUrl) {
+      targetUrl = buildTargetUrl({ query, country, city, industry, jobTitle });
+    }
+
+    console.log(`Starting execution sequence for: ${targetUrl}`);
+    const result = await scrapeLeadWebsite(targetUrl, maxPages || 3);
+
+    res.json({
+      success: true,
+      filtersUsed: { url, query, country, city, industry, jobTitle },
+      meta: {
+        emailsFound: result.emails.length,
+        phonesFound: result.phones.length,
+        businessLinksFound: result.businessLinks.length,
+        pagesScraped: result.totalPagesScraped,
+      },
+      data: result,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/", (req, res) => res.json({ success: true, message: "API running" }));
+app.get("/health", (req, res) => res.json({ success: true, status: "healthy" }));
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Scraper running on port ${PORT}`);
+});
