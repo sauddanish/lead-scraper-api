@@ -24,7 +24,8 @@ function buildTargetUrl({ query, country, city, industry, jobTitle }) {
 function isValidBusinessLink(url) {
   const blocked = [
     "google.com", "facebook.com", "linkedin.com", "instagram.com",
-    "twitter.com", "x.com", "youtube.com", "maps.google", "support.google"
+    "twitter.com", "x.com", "youtube.com", "maps.google", "support.google",
+    "accounts.google"
   ];
   return !blocked.some((d) => url.includes(d));
 }
@@ -32,7 +33,7 @@ function isValidBusinessLink(url) {
 function extractBusinessLinks(html) {
   const links = [...html.matchAll(/https?:\/\/[^\s"'<>]+/g)].map((m) => m[0]);
   return links.filter(
-    (link) => isValidBusinessLink(link) && !link.includes("search?")
+    (link) => isValidBusinessLink(link) && !link.includes("search?") && !link.includes("sorry/")
   );
 }
 
@@ -80,7 +81,7 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
     navigationTimeoutSecs: 60000,
     proxyConfiguration, 
 
-    // 🌟 CHANGE 1: Enable isolated cookie and session pool managers
+    // ✅ ENABLE SESSION CONTROL: Keeps unique cookies per session layer
     useSessionPool: true,
     sessionPoolOptions: {
       maxPoolSize: 20,
@@ -100,7 +101,7 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
       },
     },
 
-    // 🌟 CHANGE 2: Introduce randomized human delays before moving context tabs
+    // ✅ FIXED PRE-NAV: Simulates natural human thinking pauses + proper HTTP contexts
     preNavigationHooks: [
       async ({ page }) => {
         const preWait = Math.floor(Math.random() * 3000) + 2000;
@@ -114,7 +115,7 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
       },
     ],
 
-    // 🌟 CHANGE 3: Expose the session context parameter here to cycle bad IPs
+    // ✅ REQUEST HANDLER: Exposes session states to cycle out flagged proxy links
     async requestHandler({ request, page, session }) {
       const currentUrl = request.url;
       if (visited.has(currentUrl)) return;
@@ -122,7 +123,7 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
 
       console.log(`🔎 Navigating browser to: ${currentUrl}`);
 
-      // Open target URL
+      // Run navigation handling rules
       const response = await page.goto(currentUrl, {
         waitUntil: "domcontentloaded",
         timeout: 60000,
@@ -131,32 +132,53 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
       // Random human post-load pacing break
       await page.waitForTimeout(Math.floor(Math.random() * 2000) + 1500);
 
-      // 🌟 CHANGE 4: Detect explicit 429 errors or security pages and rotate proxy
+      // ✅ DETECT 429 LIMIT BLOCKS: Retire proxy session immediately and retry
       if (response && (response.status() === 429 || page.url().includes("sorry/index"))) {
         console.error(`⚠️ Proxy IP flagged with a 429 rate-limit by Google. Discarding session proxy...`);
         if (session) session.retire(); 
         throw new Error("Rate limit block hit. Retrying request with a fresh proxy instance.");
       }
 
-      // Fallback check against open elements
       if (await page.$('iframe[src*="recaptcha"]')) {
         console.error("⚠️ Caught by Google Recaptcha Shield on: " + currentUrl);
         if (session) session.retire();
         return;
       }
 
-      // Route A: Parse raw Google Search engine result layers
+      // ✅ ROUTE A: Parse Google Search results layout cleanly using explicit DOM elements
       if (currentUrl.includes("google.com/search")) {
         console.log("Analyzing Google search results layout...");
-        await page.waitForSelector("a[href]", { timeout: 5000 }).catch(() => null);
         
-        const htmlContent = await page.content().catch(() => "");
-        const discoveredLinks = extractBusinessLinks(htmlContent);
+        // Wait safely for the primary results block to populate
+        await page.waitForSelector("#search", { timeout: 8000 }).catch(() => null);
+        
+        // Isolate organic result anchor nodes away from tracking domains
+        const discoveredLinks = await page.$$eval("#search a[href]", (elements) => {
+          return elements
+            .map((el) => el.href)
+            .filter((href) => {
+              if (!href) return false;
+              const blocked = [
+                "google.com", "facebook.com", "linkedin.com", "instagram.com",
+                "twitter.com", "x.com", "youtube.com", "maps.google", "support.google",
+                "accounts.google", "search?"
+              ];
+              return !blocked.some((d) => href.includes(d));
+            });
+        }).catch(() => []);
 
-        console.log(`Found ${discoveredLinks.length} valid business websites from search.`);
+        // Fallback robust string matching if dynamic selector changes unexpectedly
+        let finalLinks = [...new Set(discoveredLinks)];
+        if (finalLinks.length === 0) {
+          console.log("⚠️ DOM targeting returned 0, running regex string fallback sequence...");
+          const htmlContent = await page.content().catch(() => "");
+          finalLinks = extractBusinessLinks(htmlContent);
+        }
+
+        console.log(`✅ Successfully extracted ${finalLinks.length} target business domains from Google Search!`);
 
         const targetRequests = [];
-        for (const link of discoveredLinks.slice(0, 5)) {
+        for (const link of finalLinks.slice(0, 5)) {
           const cleanLink = link.split("#")[0];
           if (!visited.has(cleanLink) && !queued.has(cleanLink)) {
             queued.add(cleanLink);
@@ -166,12 +188,13 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
         }
 
         if (targetRequests.length > 0) {
+          console.log(`Adding ${targetRequests.length} business targets to deep crawler queue...`);
           await crawler.addRequests(targetRequests);
         }
         return; 
       }
 
-      // Route B: Deep crawl target corporate business landing paths
+      // -------------------- ROUTE B: Target Business Domain Scraping --------------------
       const title = await page.title().catch(() => "");
       const bodyText = await page.locator("body").innerText().catch(() => "");
       const html = await page.content().catch(() => "");
