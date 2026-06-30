@@ -40,7 +40,6 @@ function extractBusinessLinks(html) {
 
 // -------------------- REGEX EXTRACTIONS --------------------
 function extractEmails(text) {
-  // Extract standard email structures, filtering out asset filenames like flags@2x.webp
   const matches = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
   const cleanEmails = matches.filter(email => {
     const lower = email.toLowerCase();
@@ -49,42 +48,28 @@ function extractEmails(text) {
   return [...new Set(cleanEmails)];
 }
 
-// 🌟 ULTIMATE PHONE CLEANER FIXED PERMANENTLY: Stops CSS coordinates, decimals, and junk
 function extractPhones(text) {
-  // Broadly match numeric patterns resembling phone arrays (+971..., 04..., 05...)
   const phoneRegex = /(?:\+971|00971|971|0)[23467958][\d\s.-]{6,12}\d/g;
   const matches = text.match(phoneRegex) || [];
   
   const cleaned = matches
     .map(num => {
-      // Standardize character spacing layout blocks
       return num.trim().replace(/\s+/g, ' ');
     })
     .filter(num => {
-      // CRITICAL FIX 1: If it contains a decimal period, it is a CSS coordinate value or layout dimension -> KILL IT
       if (num.includes('.')) return false;
-
-      // Clean out non-digit formatting characters to evaluate real length
       const rawDigits = num.replace(/\D/g, '');
-
-      // CRITICAL FIX 2: If the number starts with international 971, strip it to check base validity
       let baseDigits = rawDigits;
       if (baseDigits.startsWith('971')) {
         baseDigits = baseDigits.slice(3);
       }
-
-      // Real UAE numbers (landline/mobile) must have between 7 and 9 digits remaining after country code removal
       if (baseDigits.length < 7 || baseDigits.length > 9) return false;
-
-      // CRITICAL FIX 3: Reject repetitive sequences that indicate code settings (e.g., 0000000, 1234567)
       if (/^(\d)\1+$/.test(baseDigits)) return false;
       if (baseDigits === "1234567" || baseDigits === "12345678") return false;
-
       return true;
     })
     .map(num => {
-      // Format cleanly for presentation: prepend international +971 layout if missing
-      let formatted = num.replace(/[-.\s]/g, ''); // strip spaces temporarily
+      let formatted = num.replace(/[-.\s]/g, '');
       if (formatted.startsWith('0')) {
         formatted = '+971 ' + formatted.slice(1);
       } else if (formatted.startsWith('971')) {
@@ -162,7 +147,6 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
 
       await page.waitForTimeout(1000);
 
-      // -------------------- CORPORATE SITE EXTRACTION --------------------
       const title = await page.title().catch(() => "");
       const bodyText = await page.locator("body").innerText().catch(() => "");
       const html = await page.content().catch(() => "");
@@ -211,10 +195,18 @@ async function scrapeLeadWebsite(startUrl, maxPages = 3) {
   };
 }
 
-// -------------------- MAIN API --------------------
-app.post("/scrape", async (req, res) => {
+// -------------------- MAIN API (UPDATED FOR INTEGRATION) --------------------
+app.post("/api/v1/scrape", async (req, res) => {
   try {
-    const { url, query, country, city, industry, jobTitle, maxPages } = req.body;
+    // 🌟 1. SECURITY CHECK: Protect your scraper from unauthorized access
+    const incomingApiKey = req.headers["x-api-key"];
+    const secureKey = process.env.SCRAPER_API_SECRET_KEY || "SuperSecretDefaultKey123!";
+    
+    if (!incomingApiKey || incomingApiKey !== secureKey) {
+      return res.status(403).json({ success: false, error: "Unauthorized access: Invalid API Key." });
+    }
+
+    const { query, country, city, industry, jobTitle, maxPages } = req.body;
 
     const VALUESERP_API_KEY = "EEFC9658959749AB9E62FBA99BE06504";
     const searchParts = [query, industry, jobTitle, city, country].filter(Boolean).join(" ");
@@ -241,7 +233,7 @@ app.post("/scrape", async (req, res) => {
         success: true,
         message: "No business links found for these parameters.",
         meta: { emailsFound: 0, phonesFound: 0, businessLinksFound: 0, pagesScraped: 0 },
-        data: { totalPagesScraped: 0, emails: [], phones: [], businessLinks: [], pages: [] }
+        data: [] // Kept format flat and simple for your table dashboard
       });
     }
 
@@ -249,6 +241,9 @@ app.post("/scrape", async (req, res) => {
     let totalPhones = new Set();
     let totalPagesScrapedCount = 0;
     let successfulPagesLog = [];
+    
+    // Create final structured array to feed directly to frontend table UI rows
+    let finalLeadsDashboardArray = [];
 
     const domainsToProcess = initialBusinessLinks.slice(0, 4);
     
@@ -261,29 +256,34 @@ app.post("/scrape", async (req, res) => {
         result.phones.forEach(p => totalPhones.add(p));
         totalPagesScrapedCount += result.totalPagesScraped;
         successfulPagesLog = [...successfulPagesLog, ...result.pages];
+
+        // 🌟 2. FORMAT DATA FOR FRONTEND DASHBOARD RECTIFICATION
+        // Strip down URL clean domain format to act as Company Name
+        const cleanCompanyName = new URL(targetedUrl).hostname.replace('www.', '');
+
+        finalLeadsDashboardArray.push({
+          company: cleanCompanyName,
+          decision_maker: "Found via Domain Routing", // Placeholder since we scrape domain text directly
+          email: result.emails.join(", ") || "N/A",
+          phone: result.phones.join(", ") || "N/A",
+          industry: industry || "Identified Sub-Sector"
+        });
         
       } catch (loopError) {
         console.error(`⚠️ Skipped target entry [${targetedUrl}] due to connection issues:`, loopError.message);
       }
     }
 
+    // Return the clean, simplified array back to your main app backend
     res.json({
       success: true,
-      filtersUsed: { url, query, country, city, industry, jobTitle },
       meta: {
         emailsFound: totalEmails.size,
         phonesFound: totalPhones.size,
         businessLinksFound: initialBusinessLinks.length,
         pagesScraped: totalPagesScrapedCount,
       },
-      data: {
-        scrapedDomain: domainsToProcess[0],
-        totalPagesScraped: totalPagesScrapedCount,
-        emails: [...totalEmails],
-        phones: [...totalPhones],
-        businessLinks: initialBusinessLinks,
-        pages: successfulPagesLog
-      },
+      data: finalLeadsDashboardArray
     });
 
   } catch (error) {
